@@ -18,6 +18,13 @@ def normalize_timestamp(value):
     raise TypeError(f"Unsupported sold_at value: {value!r}")
 
 
+def require_env(name):
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
 def upsert_customer(cur, customer):
     cur.execute(
         """
@@ -214,18 +221,22 @@ def upsert_fact_sale(cur, order):
 
 
 def main():
-    mongo_uri = os.getenv(
-        "MONGO_URI",
-        "mongodb://root:rootpassword@localhost:27017/?authSource=admin",
-    )
+    mongo_user = require_env("MONGO_INITDB_ROOT_USERNAME")
+    mongo_password = require_env("MONGO_INITDB_ROOT_PASSWORD")
+    mongo_host = os.getenv("MONGO_HOST", "mongodb")
+    mongo_port = os.getenv("MONGO_PORT", "27017")
     mongo_db_name = os.getenv("MONGO_DB", "landing")
+    mongo_uri = (
+        f"mongodb://{mongo_user}:{mongo_password}"
+        f"@{mongo_host}:{mongo_port}/?authSource=admin"
+    )
 
     pg_conn = connect(
-        host=os.getenv("PGHOST", "localhost"),
+        host=os.getenv("PGHOST", "postgres"),
         port=int(os.getenv("PGPORT", "5432")),
-        dbname=os.getenv("PGDATABASE", "warehouse"),
-        user=os.getenv("PGUSER", "warehouse"),
-        password=os.getenv("PGPASSWORD", "warehouse"),
+        dbname=require_env("POSTGRES_DB"),
+        user=require_env("POSTGRES_USER"),
+        password=require_env("POSTGRES_PASSWORD"),
     )
 
     mongo_client = MongoClient(mongo_uri)

@@ -8,3 +8,4 @@ venv/
 
 # Draw.io backup files
 *.drawio.bkp
+.env

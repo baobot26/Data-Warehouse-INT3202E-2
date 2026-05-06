@@ -1,0 +1,47 @@
+name: flyway-ci
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: warehouse
+          POSTGRES_USER: warehouse
+          POSTGRES_PASSWORD: warehouse
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U warehouse -d warehouse"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Flyway dry run
+        run: |
+          mkdir -p flyway-dryrun
+          docker run --rm --network host \
+            -v "${{ github.workspace }}/db/migration:/flyway/sql:ro" \
+            -v "${{ github.workspace }}/flyway-dryrun:/flyway/dryrun" \
+            flyway/flyway:10-alpine \
+            -url="jdbc:postgresql://localhost:5432/warehouse" \
+            -user="warehouse" \
+            -password="warehouse" \
+            -locations="filesystem:/flyway/sql" \
+            -connectRetries=60 \
+            -dryRunOutput="/flyway/dryrun/flyway-dryrun.sql" \
+            migrate
+
+      - name: Verify dry run output
+        run: test -s flyway-dryrun/flyway-dryrun.sql
