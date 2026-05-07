@@ -1,29 +1,4 @@
-import os
-from datetime import datetime
-from decimal import Decimal
-
-from pymongo import MongoClient
-from psycopg import connect
-
-
-def to_decimal(value):
-    return Decimal(str(value))
-
-
-def normalize_timestamp(value):
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, str):
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    raise TypeError(f"Unsupported sold_at value: {value!r}")
-
-
-def require_env(name):
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
-
+from .utils import to_decimal, normalize_timestamp
 
 def upsert_customer(cur, customer):
     cur.execute(
@@ -46,7 +21,6 @@ def upsert_customer(cur, customer):
         ),
     )
     return cur.fetchone()[0]
-
 
 def upsert_product(cur, product):
     cur.execute(
@@ -76,7 +50,6 @@ def upsert_product(cur, product):
     )
     return cur.fetchone()[0]
 
-
 def upsert_retailer(cur, retailer):
     cur.execute(
         """
@@ -105,7 +78,6 @@ def upsert_retailer(cur, retailer):
     )
     return cur.fetchone()[0]
 
-
 def upsert_address(cur, address):
     cur.execute(
         """
@@ -123,7 +95,6 @@ def upsert_address(cur, address):
     )
     return cur.fetchone()[0]
 
-
 def upsert_payment(cur, payment):
     cur.execute(
         """
@@ -139,7 +110,6 @@ def upsert_payment(cur, payment):
         ),
     )
     return cur.fetchone()[0]
-
 
 def upsert_date(cur, sold_at):
     full_date = sold_at.date()
@@ -164,7 +134,6 @@ def upsert_date(cur, sold_at):
         ),
     )
     return cur.fetchone()[0]
-
 
 def upsert_fact_sale(cur, order):
     sold_at = normalize_timestamp(order["sold_at"])
@@ -218,43 +187,3 @@ def upsert_fact_sale(cur, order):
             payment_key,
         ),
     )
-
-
-def main():
-    mongo_user = require_env("MONGO_INITDB_ROOT_USERNAME")
-    mongo_password = require_env("MONGO_INITDB_ROOT_PASSWORD")
-    mongo_host = os.getenv("MONGO_HOST", "mongodb")
-    mongo_port = os.getenv("MONGO_PORT", "27017")
-    mongo_db_name = os.getenv("MONGO_DB", "landing")
-    mongo_uri = (
-        f"mongodb://{mongo_user}:{mongo_password}"
-        f"@{mongo_host}:{mongo_port}/?authSource=admin"
-    )
-
-    pg_conn = connect(
-        host=os.getenv("PGHOST", "postgres"),
-        port=int(os.getenv("PGPORT", "5432")),
-        dbname=require_env("POSTGRES_DB"),
-        user=require_env("POSTGRES_USER"),
-        password=require_env("POSTGRES_PASSWORD"),
-    )
-
-    mongo_client = MongoClient(mongo_uri)
-    orders = mongo_client[mongo_db_name]["orders_raw"].find()
-
-    loaded = 0
-    try:
-        with pg_conn:
-            with pg_conn.cursor() as cur:
-                for order in orders:
-                    upsert_fact_sale(cur, order)
-                    loaded += 1
-    finally:
-        mongo_client.close()
-        pg_conn.close()
-
-    print(f"Loaded {loaded} order documents into dw.fact_sales")
-
-
-if __name__ == "__main__":
-    main()
