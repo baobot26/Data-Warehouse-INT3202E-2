@@ -4,9 +4,12 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
 
 jobs:
-  dry-run:
+  migration-test:
     runs-on: ubuntu-latest
 
     services:
@@ -25,23 +28,18 @@ jobs:
           --health-retries=10
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run Flyway dry run
+      - name: Run Flyway Migration Test
         run: |
-          mkdir -p flyway-dryrun
+          # Chạy migrate thật lên database tạm của GitHub Actions
           docker run --rm --network host \
             -v "${{ github.workspace }}/db/migration:/flyway/sql:ro" \
-            -v "${{ github.workspace }}/flyway-dryrun:/flyway/dryrun" \
             flyway/flyway:10-alpine \
             -url="jdbc:postgresql://localhost:5432/warehouse" \
             -user="warehouse" \
             -password="warehouse" \
             -locations="filesystem:/flyway/sql" \
             -connectRetries=60 \
-            -dryRunOutput="/flyway/dryrun/flyway-dryrun.sql" \
             migrate
-
-      - name: Verify dry run output
-        run: test -s flyway-dryrun/flyway-dryrun.sql
