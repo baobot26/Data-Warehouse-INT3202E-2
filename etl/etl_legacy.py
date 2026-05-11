@@ -1,122 +1,260 @@
 import os
-import json
-import logging
 from datetime import datetime
 from decimal import Decimal
+
 from pymongo import MongoClient
-from psycopg import connect, rows
+from psycopg import connect
 
-# --- CONFIGURATION ---
-LOG_FORMAT = '%(asctime)s - %(levelname)s - %(message)s'
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-logger = logging.getLogger("ETL_AUDIT")
 
-def get_env(name):
-    return os.getenv(name)
-
-# --- UTILS ---
 def to_decimal(value):
     return Decimal(str(value))
 
+
 def normalize_timestamp(value):
-    if isinstance(value, datetime): return value
-    if isinstance(value, str): return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    raise TypeError(f"Unsupported sold_at type: {type(value)}")
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    raise TypeError(f"Unsupported sold_at value: {value!r}")
 
-# --- AUDIT SERVICES ---
-def log_job_start(pg_conn, job_name):
-    with pg_conn.cursor() as cur:
-        cur.execute("""
-            INSERT INTO dw.etl_job_audit (job_name, status, start_time)
-            VALUES (%s, 'RUNNING', NOW())
-            RETURNING job_id;
-        """, (job_name,))
-        return cur.fetchone()[0]
 
-def log_job_end(pg_conn, job_id, status, records_processed, error_count, error_msg=None):
-    with pg_conn.cursor() as cur:
-        cur.execute("""
-            UPDATE dw.etl_job_audit
-            SET end_time = NOW(), status = %s,
-                records_processed = %s, error_count = %s, error_message = %s
-            WHERE job_id = %s;
-        """, (status, records_processed, error_count, error_msg, job_id))
+def require_env(name):
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
 
-def log_error_record(pg_conn, job_id, record_data, error_message):
-    with pg_conn.cursor() as cur:
-        cur.execute("""
-            INSERT INTO dw.etl_error_records (job_id, source_system, record_data, error_message)
-            VALUES (%s, 'MONGODB', %s, %s);
-        """, (job_id, json.dumps(record_data, default=str), error_message))
 
-# --- ETL PHASES ---
-
-def extract_from_mongo():
-    mongo_uri = f"mongodb://{get_env('MONGO_INITDB_ROOT_USERNAME')}:{get_env('MONGO_INITDB_ROOT_PASSWORD')}@{get_env('MONGO_HOST')}:{get_env('MONGO_PORT')}/?authSource=admin"
-    client = MongoClient(mongo_uri)
-    db = client[get_env('MONGO_DB')]
-    # Dùng cursor để tối ưu RAM thay vì .list()
-    return db["orders_raw"].find(), client
-
-def transform_record(record):
-    """Làm sạch và chuẩn hóa dữ liệu trước khi nạp"""
-    transformed = record.copy()
-    transformed['sold_at'] = normalize_timestamp(record['sold_at'])
-    transformed['price'] = to_decimal(record['price'])
-    # Bạn có thể thêm các bước validate logic ở đây
-    return transformed
-
-def load_to_postgres(cur, data):
-    """Thực hiện UPSERT vào Data Warehouse"""
-    # Lưu ý: Code này kế thừa các hàm upsert_customer, upsert_fact... từ bản cũ của bạn
-    # Ở đây mình viết gọn lại đại diện cho logic Load
-    cur.execute("""
-        INSERT INTO dw.fact_sales (order_id, price, loaded_at)
-        VALUES (%s, %s, NOW())
-        ON CONFLICT (order_id) DO UPDATE SET price = EXCLUDED.price;
-    """, (data['order_id'], data['price']))
-
-# --- MAIN ORCHESTRATOR ---
-def run_etl():
-    pg_conn = connect(
-        host=get_env("PGHOST"),
-        dbname=get_env("POSTGRES_DB"),
-        user=get_env("POSTGRES_USER"),
-        password=get_env("POSTGRES_PASSWORD")
+def upsert_customer(cur, customer):
+    cur.execute(
+        """
+        INSERT INTO dw.dim_customer (customer_id, customer_name, phone_number, email, membership)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (customer_id) DO UPDATE
+        SET customer_name = EXCLUDED.customer_name,
+            phone_number = EXCLUDED.phone_number,
+            email = EXCLUDED.email,
+            membership = EXCLUDED.membership
+        RETURNING customer_key;
+        """,
+        (
+            customer["customer_id"],
+            customer["customer_name"],
+            customer.get("phone_number"),
+            customer.get("email"),
+            customer.get("membership"),
+        ),
     )
-    
-    job_id = log_job_start(pg_conn, "MONGO_TO_PG_SALES")
-    mongo_cursor, mongo_client = extract_from_mongo()
-    
-    success_count = 0
-    error_count = 0
+    return cur.fetchone()[0]
 
+
+def upsert_product(cur, product):
+    cur.execute(
+        """
+        INSERT INTO dw.dim_product (
+            product_id,
+            product_name,
+            product_category,
+            product_brand,
+            quantity_in_stock
+        )
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (product_id) DO UPDATE
+        SET product_name = EXCLUDED.product_name,
+            product_category = EXCLUDED.product_category,
+            product_brand = EXCLUDED.product_brand,
+            quantity_in_stock = EXCLUDED.quantity_in_stock
+        RETURNING product_key;
+        """,
+        (
+            product["product_id"],
+            product["product_name"],
+            product.get("product_category"),
+            product.get("product_brand"),
+            product.get("quantity_in_stock"),
+        ),
+    )
+    return cur.fetchone()[0]
+
+
+def upsert_retailer(cur, retailer):
+    cur.execute(
+        """
+        INSERT INTO dw.dim_retailer (
+            retailer_id,
+            retailer_name,
+            phone_number,
+            email,
+            rating
+        )
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (retailer_id) DO UPDATE
+        SET retailer_name = EXCLUDED.retailer_name,
+            phone_number = EXCLUDED.phone_number,
+            email = EXCLUDED.email,
+            rating = EXCLUDED.rating
+        RETURNING retailer_key;
+        """,
+        (
+            retailer["retailer_id"],
+            retailer["retailer_name"],
+            retailer.get("phone_number"),
+            retailer.get("email"),
+            retailer.get("rating"),
+        ),
+    )
+    return cur.fetchone()[0]
+
+
+def upsert_address(cur, address):
+    cur.execute(
+        """
+        INSERT INTO dw.dim_address (street, commune_ward, province_city)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (street, commune_ward, province_city) DO UPDATE
+        SET street = EXCLUDED.street
+        RETURNING address_key;
+        """,
+        (
+            address["street"],
+            address["commune_ward"],
+            address["province_city"],
+        ),
+    )
+    return cur.fetchone()[0]
+
+
+def upsert_payment(cur, payment):
+    cur.execute(
+        """
+        INSERT INTO dw.dim_payment (payment_type, method_provider)
+        VALUES (%s, %s)
+        ON CONFLICT (payment_type, method_provider) DO UPDATE
+        SET payment_type = EXCLUDED.payment_type
+        RETURNING payment_key;
+        """,
+        (
+            payment["payment_type"],
+            payment["method_provider"],
+        ),
+    )
+    return cur.fetchone()[0]
+
+
+def upsert_date(cur, sold_at):
+    full_date = sold_at.date()
+    date_key = int(full_date.strftime("%Y%m%d"))
+    cur.execute(
+        """
+        INSERT INTO dw.dim_date (date_key, full_date, day, month, year)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (date_key) DO UPDATE
+        SET full_date = EXCLUDED.full_date,
+            day = EXCLUDED.day,
+            month = EXCLUDED.month,
+            year = EXCLUDED.year
+        RETURNING date_key;
+        """,
+        (
+            date_key,
+            full_date,
+            full_date.day,
+            full_date.month,
+            full_date.year,
+        ),
+    )
+    return cur.fetchone()[0]
+
+
+def upsert_fact_sale(cur, order):
+    sold_at = normalize_timestamp(order["sold_at"])
+    customer_key = upsert_customer(cur, order["customer"])
+    product_key = upsert_product(cur, order["product"])
+    retailer_key = upsert_retailer(cur, order["retailer"])
+    address_key = upsert_address(cur, order["address"])
+    payment_key = upsert_payment(cur, order["payment"])
+    date_key = upsert_date(cur, sold_at)
+
+    cur.execute(
+        """
+        INSERT INTO dw.fact_sales (
+            order_id,
+            customer_key,
+            retailer_key,
+            product_key,
+            quantity,
+            price,
+            discount,
+            tax,
+            date_key,
+            address_key,
+            payment_key
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (order_id) DO UPDATE
+        SET customer_key = EXCLUDED.customer_key,
+            retailer_key = EXCLUDED.retailer_key,
+            product_key = EXCLUDED.product_key,
+            quantity = EXCLUDED.quantity,
+            price = EXCLUDED.price,
+            discount = EXCLUDED.discount,
+            tax = EXCLUDED.tax,
+            date_key = EXCLUDED.date_key,
+            address_key = EXCLUDED.address_key,
+            payment_key = EXCLUDED.payment_key,
+            loaded_at = NOW();
+        """,
+        (
+            order["order_id"],
+            customer_key,
+            retailer_key,
+            product_key,
+            order["quantity"],
+            to_decimal(order["price"]),
+            to_decimal(order.get("discount", 0)),
+            to_decimal(order.get("tax", 0)),
+            date_key,
+            address_key,
+            payment_key,
+        ),
+    )
+
+
+def main():
+    mongo_user = require_env("MONGO_INITDB_ROOT_USERNAME")
+    mongo_password = require_env("MONGO_INITDB_ROOT_PASSWORD")
+    mongo_host = os.getenv("MONGO_HOST", "mongodb")
+    mongo_port = os.getenv("MONGO_PORT", "27017")
+    mongo_db_name = os.getenv("MONGO_DB", "landing")
+    mongo_uri = (
+        f"mongodb://{mongo_user}:{mongo_password}"
+        f"@{mongo_host}:{mongo_port}/?authSource=admin"
+    )
+
+    pg_conn = connect(
+        host=os.getenv("PGHOST", "postgres"),
+        port=int(os.getenv("PGPORT", "5432")),
+        dbname=require_env("POSTGRES_DB"),
+        user=require_env("POSTGRES_USER"),
+        password=require_env("POSTGRES_PASSWORD"),
+    )
+
+    mongo_client = MongoClient(mongo_uri)
+    orders = mongo_client[mongo_db_name]["orders_raw"].find()
+
+    loaded = 0
     try:
-        for record in mongo_cursor:
-            try:
-                # Bọc mỗi bản ghi trong 1 transaction riêng hoặc savepoint 
-                # để lỗi 1 dòng không hỏng cả mẻ
-                with pg_conn.transaction():
-                    with pg_conn.cursor() as cur:
-                        clean_data = transform_record(record)
-                        load_to_postgres(cur, clean_data)
-                        success_count += 1
-            except Exception as e:
-                error_count += 1
-                log_error_record(pg_conn, job_id, record, str(e))
-                pg_conn.commit() # Lưu vết lỗi vào DB ngay lập tức
-                logger.warning(f"Record failed: {record.get('order_id')} - {str(e)}")
-
-        log_job_end(pg_conn, job_id, 'SUCCESS', success_count, error_count)
-        logger.info(f"ETL Finished. Success: {success_count}, Fail: {error_count}")
-
-    except Exception as fatal_e:
-        log_job_end(pg_conn, job_id, 'FAILED', success_count, error_count, str(fatal_e))
-        logger.error(f"Fatal ETL Error: {str(fatal_e)}")
-    
+        with pg_conn:
+            with pg_conn.cursor() as cur:
+                for order in orders:
+                    upsert_fact_sale(cur, order)
+                    loaded += 1
     finally:
         mongo_client.close()
         pg_conn.close()
 
+    print(f"Loaded {loaded} order documents into dw.fact_sales")
+
+
 if __name__ == "__main__":
-    run_etl()
+    main()
