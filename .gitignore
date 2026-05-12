@@ -1,10 +1,29 @@
-# Python cache
+# Python
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
 
 # Virtual environments
+.env
 .venv/
+env/
 venv/
 
-# Draw.io backup files
+# Docker
+*.log
+docker-compose.override.yml
+
+# Secrets
+.env
+
+# VSCode
+.vscode/
+
+# Backup files
+*.bak
+*.swp
+
+# Draw.io autosave
 *.drawio.bkp

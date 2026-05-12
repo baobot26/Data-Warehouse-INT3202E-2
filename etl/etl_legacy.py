@@ -403,6 +403,14 @@ def load_silver(cur, batch_id: uuid.UUID) -> tuple[int, int]:
     return accepted, rejected
 
 
+def require_env(name):
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
+# def upsert_customer(cur, customer):
 def upsert_customer(cur, row: dict[str, Any]) -> int:
     cur.execute(
         """
@@ -603,6 +611,7 @@ def upsert_fact_sale(cur, row: dict[str, Any], batch_id: uuid.UUID) -> None:
     )
 
 
+<<<<<<< HEAD:etl/load_sample.py
 def load_gold(cur, batch_id: uuid.UUID) -> int:
     cur.execute(
         """
@@ -670,6 +679,26 @@ def main() -> None:
     )
     mongo_db_name = os.getenv("MONGO_DB", "landing")
     collection_name = os.getenv("MONGO_COLLECTION", "orders_raw")
+=======
+def main():
+    mongo_user = require_env("MONGO_INITDB_ROOT_USERNAME")
+    mongo_password = require_env("MONGO_INITDB_ROOT_PASSWORD")
+    mongo_host = os.getenv("MONGO_HOST", "mongodb")
+    mongo_port = os.getenv("MONGO_PORT", "27017")
+    mongo_db_name = os.getenv("MONGO_DB", "landing")
+    mongo_uri = (
+        f"mongodb://{mongo_user}:{mongo_password}"
+        f"@{mongo_host}:{mongo_port}/?authSource=admin"
+    )
+
+    pg_conn = connect(
+        host=os.getenv("PGHOST", "postgres"),
+        port=int(os.getenv("PGPORT", "5432")),
+        dbname=require_env("POSTGRES_DB"),
+        user=require_env("POSTGRES_USER"),
+        password=require_env("POSTGRES_PASSWORD"),
+    )
+>>>>>>> main:etl/etl_legacy.py
 
     mongo_client = MongoClient(mongo_uri)
     pg_conn = pg_connect()
