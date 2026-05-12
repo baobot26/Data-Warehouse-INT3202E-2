@@ -611,7 +611,6 @@ def upsert_fact_sale(cur, row: dict[str, Any], batch_id: uuid.UUID) -> None:
     )
 
 
-<<<<<<< HEAD:etl/load_sample.py
 def load_gold(cur, batch_id: uuid.UUID) -> int:
     cur.execute(
         """
@@ -671,15 +670,6 @@ def load_gold(cur, batch_id: uuid.UUID) -> int:
     )
     return loaded
 
-
-def main() -> None:
-    mongo_uri = os.getenv(
-        "MONGO_URI",
-        "mongodb://root:rootpassword@localhost:27017/?authSource=admin",
-    )
-    mongo_db_name = os.getenv("MONGO_DB", "landing")
-    collection_name = os.getenv("MONGO_COLLECTION", "orders_raw")
-=======
 def main():
     mongo_user = require_env("MONGO_INITDB_ROOT_USERNAME")
     mongo_password = require_env("MONGO_INITDB_ROOT_PASSWORD")
@@ -698,7 +688,6 @@ def main():
         user=require_env("POSTGRES_USER"),
         password=require_env("POSTGRES_PASSWORD"),
     )
->>>>>>> main:etl/etl_legacy.py
 
     mongo_client = MongoClient(mongo_uri)
     pg_conn = pg_connect()
