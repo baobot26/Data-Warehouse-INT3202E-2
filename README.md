@@ -12,6 +12,7 @@ Architecture:
   - `silver`: typed clean/rejected order rows linked back to bronze.
   - `dw`: the Gold star schema used for analytics.
 - `etl.batch_run` records each pipeline run for audit, debugging, and reprocessing.
+- `dq.check_results` stores per-batch data quality checks and reconciliation results.
 
 ## Schema mapping
 
@@ -29,6 +30,7 @@ Layering and audit tables:
 - `bronze.orders_raw`
 - `silver.orders_clean`
 - `silver.orders_rejected`
+- `dq.check_results`
 
 ## Start the stack
 
@@ -62,13 +64,21 @@ docker compose exec postgres psql -U warehouse -d warehouse -c "SELECT f.order_i
 docker compose exec postgres psql -U warehouse -d warehouse -c "SELECT f.order_id, s.silver_id, b.bronze_id, b.mongo_id, b.payload FROM dw.fact_sales f JOIN silver.orders_clean s ON s.silver_id = f.silver_id JOIN bronze.orders_raw b ON b.bronze_id = s.bronze_id WHERE f.order_id = 'ORD-1001';"
 ```
 
+6. Review data quality checks for the latest batch:
+
+```powershell
+docker compose exec postgres psql -U warehouse -d warehouse -c "SELECT layer, check_name, status, severity, checked_count, failed_count, details FROM dq.check_results WHERE batch_id = (SELECT batch_id FROM etl.batch_run ORDER BY started_at DESC LIMIT 1) ORDER BY layer, check_name;"
+```
+
 ## Files
 
 - `docker-compose.yml`: starts MongoDB, PostgreSQL, and the ETL runner.
-- `init.sql`: creates the Bronze/Silver/Gold tables, audit table, and indexes in PostgreSQL.
+- `init.sql`: creates the Bronze/Silver/Gold tables, audit and DQ tables, and indexes in PostgreSQL.
 - `mongo-init.js`: seeds raw order documents in MongoDB.
 - `Dockerfile`: builds the ETL runner image.
-- `etl/load_sample.py`: extracts raw MongoDB documents into Bronze, validates them into Silver, and loads the Gold star schema.
+- `etl/main_etl.py`: Docker entrypoint for the layered ETL.
+- `etl/etl_legacy.py`: extracts raw MongoDB documents into Bronze, validates them into Silver, runs DQ, and loads the Gold star schema.
+- `etl/dq.py`: runs per-batch data quality checks and reconciliation.
 
 ## Notes
 
