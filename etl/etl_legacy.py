@@ -9,6 +9,8 @@ from typing import Any
 from pymongo import MongoClient
 from psycopg import connect
 
+from etl.dq import run_data_quality_checks
+
 
 PIPELINE_NAME = "orders"
 
@@ -149,9 +151,9 @@ def pg_connect():
     return connect(
         host=os.getenv("PGHOST", "localhost"),
         port=int(os.getenv("PGPORT", "5432")),
-        dbname=os.getenv("PGDATABASE", "warehouse"),
-        user=os.getenv("PGUSER", "warehouse"),
-        password=os.getenv("PGPASSWORD", "warehouse"),
+        dbname=os.getenv("PGDATABASE") or os.getenv("POSTGRES_DB", "warehouse"),
+        user=os.getenv("PGUSER") or os.getenv("POSTGRES_USER", "warehouse"),
+        password=os.getenv("PGPASSWORD") or os.getenv("POSTGRES_PASSWORD", "warehouse"),
     )
 
 
@@ -660,9 +662,6 @@ def load_gold(cur, batch_id: uuid.UUID) -> int:
         """
         UPDATE etl.batch_run
         SET gold_completed_at = NOW(),
-            finished_at = NOW(),
-            status = 'success',
-            error_message = NULL,
             gold_loaded_count = %s
         WHERE batch_id = %s;
         """,
@@ -670,28 +669,50 @@ def load_gold(cur, batch_id: uuid.UUID) -> int:
     )
     return loaded
 
-def main():
+
+def mongo_uri_from_env() -> str:
+    configured_uri = os.getenv("MONGO_URI")
+    if configured_uri:
+        return configured_uri
+
     mongo_user = require_env("MONGO_INITDB_ROOT_USERNAME")
     mongo_password = require_env("MONGO_INITDB_ROOT_PASSWORD")
     mongo_host = os.getenv("MONGO_HOST", "mongodb")
     mongo_port = os.getenv("MONGO_PORT", "27017")
-    mongo_db_name = os.getenv("MONGO_DB", "landing")
-    mongo_uri = (
+    return (
         f"mongodb://{mongo_user}:{mongo_password}"
         f"@{mongo_host}:{mongo_port}/?authSource=admin"
     )
 
-    pg_conn = connect(
-        host=os.getenv("PGHOST", "postgres"),
-        port=int(os.getenv("PGPORT", "5432")),
-        dbname=require_env("POSTGRES_DB"),
-        user=require_env("POSTGRES_USER"),
-        password=require_env("POSTGRES_PASSWORD"),
+
+def finish_batch(cur, batch_id: uuid.UUID, dq_passed: bool) -> None:
+    status = "success" if dq_passed else "failed"
+    error_message = None if dq_passed else "Data quality checks failed"
+    cur.execute(
+        """
+        UPDATE etl.batch_run
+        SET finished_at = NOW(),
+            status = %s,
+            error_message = %s
+        WHERE batch_id = %s;
+        """,
+        (status, error_message, batch_id),
     )
+
+
+def run_pipeline() -> uuid.UUID:
+    mongo_uri = mongo_uri_from_env()
+    mongo_db_name = os.getenv("MONGO_DB", "landing")
+    collection_name = os.getenv("MONGO_COLLECTION", "orders_raw")
 
     mongo_client = MongoClient(mongo_uri)
     pg_conn = pg_connect()
     batch_id = uuid.uuid4()
+    extracted = 0
+    accepted = 0
+    rejected = 0
+    loaded = 0
+    dq_passed = False
 
     try:
         collection = mongo_client[mongo_db_name][collection_name]
@@ -711,6 +732,14 @@ def main():
             loaded = load_gold(cur, batch_id)
         pg_conn.commit()
 
+        with pg_conn.cursor() as cur:
+            dq_passed = run_data_quality_checks(cur, batch_id)
+            finish_batch(cur, batch_id, dq_passed)
+        pg_conn.commit()
+
+        if not dq_passed:
+            raise RuntimeError(f"Data quality checks failed for batch {batch_id}")
+
     except Exception as exc:
         try:
             update_batch_failure(pg_conn, batch_id, exc)
@@ -725,8 +754,13 @@ def main():
         "Batch "
         f"{batch_id} complete: extracted={extracted}, "
         f"silver_accepted={accepted}, silver_rejected={rejected}, "
-        f"gold_loaded={loaded}"
+        f"gold_loaded={loaded}, dq_passed={dq_passed}"
     )
+    return batch_id
+
+
+def main() -> None:
+    run_pipeline()
 
 
 if __name__ == "__main__":
