@@ -57,6 +57,8 @@ services:
       MONGO_DB: ${MONGO_DB}
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    volumes:
+      - ./data:/data:ro
     restart: "no"
 
 volumes:

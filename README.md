@@ -54,7 +54,35 @@ docker compose run --rm --entrypoint python etl -m etl.seed_scale_data --count 1
 
 This keeps the repository small while letting you seed 10,000, 100,000, or more synthetic orders for performance testing. The `--reset` flag removes previously generated `ORD-SCALE-` records before inserting the requested volume.
 
-3. Run the ETL job to load sample landing data from MongoDB into PostgreSQL:
+3. Optional for public data: import Olist CSV files into MongoDB raw landing.
+
+Download the Olist CSV files into `data/olist/raw` with their original filenames:
+
+```text
+data/olist/raw/olist_orders_dataset.csv
+data/olist/raw/olist_order_items_dataset.csv
+data/olist/raw/olist_customers_dataset.csv
+data/olist/raw/olist_products_dataset.csv
+data/olist/raw/olist_sellers_dataset.csv
+data/olist/raw/olist_order_payments_dataset.csv
+data/olist/raw/product_category_name_translation.csv
+```
+
+Validate the conversion without writing to MongoDB:
+
+```powershell
+docker compose run --rm --entrypoint python etl -m etl.import_olist_to_mongo --source-dir /data/olist/raw --limit 10 --dry-run
+```
+
+Import delivered Olist order items into `landing.orders_raw`:
+
+```powershell
+docker compose run --rm --entrypoint python etl -m etl.import_olist_to_mongo --source-dir /data/olist/raw --reset-prefix
+```
+
+The importer keeps the existing pipeline intact by converting each Olist order item into one MongoDB raw order document with an `OLIST-` order id. Existing records with other prefixes, such as the demo `ORD-` records or generated `ORD-SCALE-` records, are not removed by `--reset-prefix`.
+
+4. Run the ETL job to load sample landing data from MongoDB into PostgreSQL:
 
 ```powershell
 docker compose run --rm etl
@@ -66,7 +94,7 @@ For scale-test timing in PowerShell:
 Measure-Command { docker compose run --rm etl }
 ```
 
-4. Check the warehouse:
+5. Check the warehouse:
 
 ```powershell
 docker compose exec postgres psql -U warehouse -d warehouse -c "SELECT order_id, quantity, price, discount, tax, batch_id, silver_id FROM dw.fact_sales;"
@@ -78,19 +106,19 @@ Check the latest batch size and runtime:
 docker compose exec postgres psql -U warehouse -d warehouse -c "SELECT status, extracted_count, silver_accepted_count, silver_rejected_count, gold_loaded_count, finished_at - started_at AS elapsed FROM etl.batch_run ORDER BY started_at DESC LIMIT 1;"
 ```
 
-5. Inspect dimensions with a simple join:
+6. Inspect dimensions with a simple join:
 
 ```powershell
 docker compose exec postgres psql -U warehouse -d warehouse -c "SELECT f.order_id, d.full_date, c.customer_name, p.product_name, r.retailer_name FROM dw.fact_sales f JOIN dw.dim_date d ON d.date_key = f.date_key JOIN dw.dim_customer c ON c.customer_key = f.customer_key JOIN dw.dim_product p ON p.product_key = f.product_key JOIN dw.dim_retailer r ON r.retailer_key = f.retailer_key;"
 ```
 
-6. Trace a Gold fact back to its Silver and Bronze rows:
+7. Trace a Gold fact back to its Silver and Bronze rows:
 
 ```powershell
 docker compose exec postgres psql -U warehouse -d warehouse -c "SELECT f.order_id, s.silver_id, b.bronze_id, b.mongo_id, b.payload FROM dw.fact_sales f JOIN silver.orders_clean s ON s.silver_id = f.silver_id JOIN bronze.orders_raw b ON b.bronze_id = s.bronze_id WHERE f.order_id = 'ORD-1001';"
 ```
 
-7. Review data quality checks for the latest batch:
+8. Review data quality checks for the latest batch:
 
 ```powershell
 docker compose exec postgres psql -U warehouse -d warehouse -c "SELECT layer, check_name, status, severity, checked_count, failed_count, details FROM dq.check_results WHERE batch_id = (SELECT batch_id FROM etl.batch_run ORDER BY started_at DESC LIMIT 1) ORDER BY layer, check_name;"
@@ -105,6 +133,7 @@ docker compose exec postgres psql -U warehouse -d warehouse -c "SELECT layer, ch
 - `etl/main_etl.py`: Docker entrypoint for the layered ETL.
 - `etl/etl_legacy.py`: extracts raw MongoDB documents into Bronze, validates them into Silver, runs DQ, and loads the Gold star schema.
 - `etl/dq.py`: runs per-batch data quality checks and reconciliation.
+- `etl/import_olist_to_mongo.py`: converts Olist public CSV files into MongoDB raw order documents without bypassing Bronze/Silver/Gold.
 - `etl/seed_scale_data.py`: generates deterministic synthetic MongoDB orders for scale testing.
 
 ## Notes
