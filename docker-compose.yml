@@ -61,6 +61,81 @@ services:
       MONGO_DB: ${MONGO_DB}
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    volumes:
+      - ./data:/data:ro
+    restart: "no"
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dw-dashboard
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DASHBOARD_PORT: "8080"
+    ports:
+      - "8501:8080"
+    command: ["python", "-m", "dashboard.app"]
+    restart: unless-stopped
+
+  olist-pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles:
+      - tools
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      MONGO_HOST: mongodb
+      MONGO_PORT: "27017"
+      MONGO_DB: ${MONGO_DB}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+      KAGGLE_USERNAME: ${KAGGLE_USERNAME:-}
+      KAGGLE_KEY: ${KAGGLE_KEY:-}
+      OLIST_LIMIT: ${OLIST_LIMIT:-0}
+    volumes:
+      - ./data:/data
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        mkdir -p /data/olist/raw
+        required_csv="/data/olist/raw/olist_orders_dataset.csv /data/olist/raw/olist_order_items_dataset.csv /data/olist/raw/olist_customers_dataset.csv /data/olist/raw/olist_products_dataset.csv /data/olist/raw/olist_sellers_dataset.csv /data/olist/raw/olist_order_payments_dataset.csv /data/olist/raw/product_category_name_translation.csv"
+        missing_csv=0
+        for csv in $$required_csv; do
+          if [ ! -f "$$csv" ]; then
+            missing_csv=1
+          fi
+        done
+        if [ "$$missing_csv" = "1" ]; then
+          if [ -z "$${KAGGLE_USERNAME:-}" ] || [ -z "$${KAGGLE_KEY:-}" ]; then
+            echo "KAGGLE_USERNAME and KAGGLE_KEY are required when Olist CSV files are not already present in /data/olist/raw." >&2
+            exit 2
+          fi
+          kaggle datasets download -d olistbr/brazilian-ecommerce -p /data/olist/raw --unzip --force
+        else
+          echo "Olist CSV files already exist in /data/olist/raw; skipping Kaggle download."
+        fi
+        python -m etl.import_olist_to_mongo --source-dir /data/olist/raw --limit "$${OLIST_LIMIT:-0}" --reset-prefix
+        python -m etl.main_etl
     restart: "no"
 
 volumes:

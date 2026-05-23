@@ -1,0 +1,1 @@
+"""Simple warehouse dashboard package."""

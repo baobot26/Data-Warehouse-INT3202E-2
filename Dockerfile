@@ -6,5 +6,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY etl ./etl
+COPY dashboard ./dashboard
 
-CMD ["python", "/app/etl/load_sample.py"]
+CMD ["python", "-m", "etl.main_etl"]
