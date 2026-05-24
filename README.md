@@ -73,7 +73,7 @@ docker compose --profile tools run --rm olist-pipeline
 The `olist-pipeline` service runs fully inside Docker:
 - verifies the required Olist CSV files exist in `data/olist/raw`;
 - imports delivered Olist order items into MongoDB `landing.orders_raw`;
-- runs `python -m etl.main_etl` to load Bronze, Silver, Gold, DQ, and audit tables.
+- runs `python -m core.etl.main_etl` to load Bronze, Silver, Gold, DQ, and audit tables.
 
 The importer keeps the existing pipeline intact by converting each Olist order item into one MongoDB raw order document with an `OLIST-` order id. Olist is the only supported source dataset for regular runs in this project. Set `OLIST_LIMIT` in `.env` to a positive number for a smaller test import.
 

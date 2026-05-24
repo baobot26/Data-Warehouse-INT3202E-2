@@ -1,6 +1,6 @@
 import argparse
 
-from etl.etl_legacy import run_pipeline
+from .etl_legacy import run_pipeline
 
 
 def main() -> None:

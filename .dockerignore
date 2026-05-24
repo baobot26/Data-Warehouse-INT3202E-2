@@ -1,6 +1,9 @@
 .git
 .github
 .venv
+dashboard/
+etl/
+db/
 __pycache__/
 **/__pycache__/
 *.pyc

@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
-from etl.utils import require_env
+from .utils import require_env
 
 
 REQUIRED_CSV_FILES = {
