@@ -412,17 +412,82 @@ def require_env(name):
     return value
 
 
-# def upsert_customer(cur, customer):
 def upsert_customer(cur, row: dict[str, Any]) -> int:
     cur.execute(
         """
-        INSERT INTO dw.dim_customer (customer_id, customer_name, phone_number, email, membership)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (customer_id) DO UPDATE
-        SET customer_name = EXCLUDED.customer_name,
-            phone_number = EXCLUDED.phone_number,
-            email = EXCLUDED.email,
-            membership = EXCLUDED.membership
+        WITH closed AS (
+            UPDATE dw.dim_customer
+            SET valid_to = NOW(),
+                is_current = FALSE
+            WHERE customer_id = %s
+              AND is_current = TRUE
+              AND (
+                customer_name IS DISTINCT FROM %s
+                OR phone_number IS DISTINCT FROM %s
+                OR email IS DISTINCT FROM %s
+                OR membership IS DISTINCT FROM %s
+              )
+            RETURNING valid_to
+        )
+        INSERT INTO dw.dim_customer (
+            customer_id,
+            customer_name,
+            phone_number,
+            email,
+            membership,
+            valid_from,
+            valid_to,
+            is_current
+        )
+        SELECT %s, %s, %s, %s, %s, closed.valid_to, NULL, TRUE
+        FROM closed
+        RETURNING customer_key;
+        """,
+        (
+            row["customer_id"],
+            row["customer_name"],
+            row.get("customer_phone_number"),
+            row.get("customer_email"),
+            row.get("customer_membership"),
+            row["customer_id"],
+            row["customer_name"],
+            row.get("customer_phone_number"),
+            row.get("customer_email"),
+            row.get("customer_membership"),
+        ),
+    )
+    changed_row = cur.fetchone()
+    if changed_row:
+        return changed_row[0]
+
+    cur.execute(
+        """
+        SELECT customer_key
+        FROM dw.dim_customer
+        WHERE customer_id = %s
+          AND is_current = TRUE
+        ORDER BY valid_from DESC, customer_key DESC
+        LIMIT 1;
+        """,
+        (row["customer_id"],),
+    )
+    existing_row = cur.fetchone()
+    if existing_row:
+        return existing_row[0]
+
+    cur.execute(
+        """
+        INSERT INTO dw.dim_customer (
+            customer_id,
+            customer_name,
+            phone_number,
+            email,
+            membership,
+            valid_from,
+            valid_to,
+            is_current
+        )
+        VALUES (%s, %s, %s, %s, %s, NOW(), NULL, TRUE)
         RETURNING customer_key;
         """,
         (
