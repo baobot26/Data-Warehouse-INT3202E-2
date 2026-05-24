@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+local-only/
+data/
+*.log
+*.bak
+*.swp

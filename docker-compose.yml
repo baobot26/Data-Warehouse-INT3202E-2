@@ -1,5 +1,7 @@
 services:
   postgres:
+    env_file:
+      - .env
     image: postgres:16-alpine
     container_name: dw-postgres
     restart: unless-stopped
@@ -19,6 +21,8 @@ services:
       retries: 10
 
   mongodb:
+    env_file:
+      - .env
     image: mongo:7.0
     container_name: dw-mongodb
     restart: unless-stopped
@@ -41,6 +45,8 @@ services:
       retries: 10
 
   etl:
+    env_file:
+      - .env
     build:
       context: .
       dockerfile: Dockerfile
@@ -67,6 +73,8 @@ services:
     restart: "no"
 
   dashboard:
+    env_file:
+      - .env
     build:
       context: .
       dockerfile: Dockerfile
@@ -83,10 +91,19 @@ services:
       DASHBOARD_PORT: "8080"
     ports:
       - "8501:8080"
-    command: ["python", "-m", "dashboard.app"]
+    command:
+      - sh
+      - -ec
+      - |
+        if [ -f /app/core/dashboard/app.py ]; then
+          exec python -m core.dashboard.app
+        fi
+        exec python -m dashboard.app
     restart: unless-stopped
 
   olist-pipeline:
+    env_file:
+      - .env
     build:
       context: .
       dockerfile: Dockerfile
@@ -114,7 +131,7 @@ services:
       - ./data:/data
     command:
       - sh
-      - -c
+      - -ec
       - |
         set -eu
         mkdir -p /data/olist/raw
@@ -128,11 +145,17 @@ services:
         if [ "$$missing_csv" = "1" ]; then
           echo "Required Olist CSV files are missing from /data/olist/raw. Add the raw CSV files to data/olist/raw before running olist-pipeline." >&2
           exit 2
-        else
-          echo "Olist CSV files found in /data/olist/raw."
         fi
-        python -m etl.import_olist_to_mongo --source-dir /data/olist/raw --limit "$${OLIST_LIMIT:-0}" --reset-prefix
-        python -m etl.main_etl
+        echo "Olist CSV files found in /data/olist/raw."
+        if [ -f /app/core/etl/import_olist_to_mongo.py ]; then
+          IMPORT_MODULE=core.etl.import_olist_to_mongo
+          RUNNER_MODULE=core.etl.main_etl
+        else
+          IMPORT_MODULE=etl.import_olist_to_mongo
+          RUNNER_MODULE=etl.main_etl
+        fi
+        python -m "$$IMPORT_MODULE" --source-dir /data/olist/raw --limit "$${OLIST_LIMIT:-0}" --reset-prefix
+        python -m "$$RUNNER_MODULE"
     restart: "no"
 
 volumes:
