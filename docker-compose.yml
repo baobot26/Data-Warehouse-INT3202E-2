@@ -59,6 +59,7 @@ services:
       MONGO_HOST: mongodb
       MONGO_PORT: "27017"
       MONGO_DB: ${MONGO_DB}
+      MONGO_COLLECTION: ${MONGO_COLLECTION:-orders_raw}
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
     volumes:
@@ -105,10 +106,9 @@ services:
       MONGO_HOST: mongodb
       MONGO_PORT: "27017"
       MONGO_DB: ${MONGO_DB}
+      MONGO_COLLECTION: ${MONGO_COLLECTION:-orders_raw}
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
-      KAGGLE_USERNAME: ${KAGGLE_USERNAME:-}
-      KAGGLE_KEY: ${KAGGLE_KEY:-}
       OLIST_LIMIT: ${OLIST_LIMIT:-0}
     volumes:
       - ./data:/data
@@ -126,13 +126,10 @@ services:
           fi
         done
         if [ "$$missing_csv" = "1" ]; then
-          if [ -z "$${KAGGLE_USERNAME:-}" ] || [ -z "$${KAGGLE_KEY:-}" ]; then
-            echo "KAGGLE_USERNAME and KAGGLE_KEY are required when Olist CSV files are not already present in /data/olist/raw." >&2
-            exit 2
-          fi
-          kaggle datasets download -d olistbr/brazilian-ecommerce -p /data/olist/raw --unzip --force
+          echo "Required Olist CSV files are missing from /data/olist/raw. Add the raw CSV files to data/olist/raw before running olist-pipeline." >&2
+          exit 2
         else
-          echo "Olist CSV files already exist in /data/olist/raw; skipping Kaggle download."
+          echo "Olist CSV files found in /data/olist/raw."
         fi
         python -m etl.import_olist_to_mongo --source-dir /data/olist/raw --limit "$${OLIST_LIMIT:-0}" --reset-prefix
         python -m etl.main_etl

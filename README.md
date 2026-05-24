@@ -10,12 +10,16 @@ Prerequisite:
 Copy-Item .env.example .env
 ```
 
-For Dockerized Olist loading through Kaggle, also set these values in `.env`:
+Olist raw CSV files must be present in `data/olist/raw` before running the pipeline. The repository is expected to include these files for test runs:
 
 ```text
-KAGGLE_USERNAME=your_kaggle_username
-KAGGLE_KEY=your_kaggle_api_key
-OLIST_LIMIT=0
+data/olist/raw/olist_orders_dataset.csv
+data/olist/raw/olist_order_items_dataset.csv
+data/olist/raw/olist_customers_dataset.csv
+data/olist/raw/olist_products_dataset.csv
+data/olist/raw/olist_sellers_dataset.csv
+data/olist/raw/olist_order_payments_dataset.csv
+data/olist/raw/product_category_name_translation.csv
 ```
 
 Architecture:
@@ -60,14 +64,14 @@ docker compose down -v
 docker compose up -d postgres mongodb dashboard
 ```
 
-3. Download Olist through Kaggle, import it into MongoDB, and run the ETL:
+3. Import the checked-in Olist raw CSV files into MongoDB, and run the ETL:
 
 ```powershell
 docker compose --profile tools run --rm olist-pipeline
 ```
 
 The `olist-pipeline` service runs fully inside Docker:
-- downloads `olistbr/brazilian-ecommerce` from Kaggle into `data/olist/raw` when the CSV files are missing;
+- verifies the required Olist CSV files exist in `data/olist/raw`;
 - imports delivered Olist order items into MongoDB `landing.orders_raw`;
 - runs `python -m etl.main_etl` to load Bronze, Silver, Gold, DQ, and audit tables.
 
