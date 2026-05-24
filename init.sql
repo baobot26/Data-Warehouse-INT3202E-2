@@ -126,12 +126,27 @@ CREATE INDEX IF NOT EXISTS idx_dq_check_results_status
 
 CREATE TABLE IF NOT EXISTS dw.dim_customer (
     customer_key BIGSERIAL PRIMARY KEY,
-    customer_id TEXT NOT NULL UNIQUE,
+    customer_id TEXT NOT NULL,
     customer_name TEXT NOT NULL,
     phone_number TEXT,
     email TEXT,
-    membership TEXT
+    membership TEXT,
+    valid_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    valid_to TIMESTAMPTZ,
+    is_current BOOLEAN NOT NULL DEFAULT TRUE,
+    CONSTRAINT ck_dim_customer_scd2_validity
+        CHECK (
+            (is_current = TRUE AND valid_to IS NULL)
+            OR (is_current = FALSE AND valid_to IS NOT NULL)
+        )
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_customer_current
+    ON dw.dim_customer (customer_id)
+    WHERE is_current;
+
+CREATE INDEX IF NOT EXISTS idx_dim_customer_customer_id_valid_from
+    ON dw.dim_customer (customer_id, valid_from DESC);
 
 CREATE TABLE IF NOT EXISTS dw.dim_product (
     product_key BIGSERIAL PRIMARY KEY,
