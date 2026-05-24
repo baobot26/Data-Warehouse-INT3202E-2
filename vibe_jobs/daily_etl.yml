@@ -1,0 +1,24 @@
+version: 1
+jobs:
+  - id: daily-customer-scd2-etl
+    name: daily_customer_scd2_incremental
+    description: Incremental ETL from MongoDB landing.orders_raw to PostgreSQL DW with SCD2 on dim_customer.
+    schedule:
+      cron: "0 2 * * *"
+      timezone: "Asia/Ho_Chi_Minh"
+    dependencies:
+      - postgres_healthy
+      - mongodb_healthy
+    task:
+      type: command
+      working_dir: .
+      command:
+        - python
+        - -m
+        - etl.main_etl
+    retry:
+      max_attempts: 3
+      backoff_seconds: 300
+      backoff_strategy: exponential
+    concurrency:
+      policy: forbid

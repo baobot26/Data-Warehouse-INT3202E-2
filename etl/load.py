@@ -1,26 +1,129 @@
 from .utils import to_decimal, normalize_timestamp
 
-def upsert_customer(cur, customer):
+def _normalize_text(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text if text else None
+
+def _get_current_customer_key(cur, customer_id):
     cur.execute(
         """
-        INSERT INTO dw.dim_customer (customer_id, customer_name, phone_number, email, membership)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (customer_id) DO UPDATE
-        SET customer_name = EXCLUDED.customer_name,
-            phone_number = EXCLUDED.phone_number,
-            email = EXCLUDED.email,
-            membership = EXCLUDED.membership
+        SELECT customer_key
+        FROM dw.dim_customer
+        WHERE customer_id = %s
+          AND is_current = TRUE
+        ORDER BY valid_from DESC, customer_key DESC
+        LIMIT 1;
+        """,
+        (customer_id,),
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
+
+def upsert_customer(cur, customer):
+    customer_id = _normalize_text(customer.get("customer_id"))
+    customer_name = _normalize_text(customer.get("customer_name"))
+    phone_number = _normalize_text(customer.get("phone_number"))
+    email = _normalize_text(customer.get("email"))
+    membership = _normalize_text(customer.get("membership"))
+
+    if customer_id is None:
+        raise ValueError("customer_id is required")
+    if customer_name is None:
+        raise ValueError("customer_name is required")
+
+    cur.execute(
+        """
+        WITH closed AS (
+            UPDATE dw.dim_customer
+            SET valid_to = NOW(),
+                is_current = FALSE
+            WHERE customer_id = %s
+              AND is_current = TRUE
+              AND (
+                customer_name IS DISTINCT FROM %s
+                OR phone_number IS DISTINCT FROM %s
+                OR email IS DISTINCT FROM %s
+                OR membership IS DISTINCT FROM %s
+              )
+            RETURNING valid_to
+        )
+        INSERT INTO dw.dim_customer (
+            customer_id,
+            customer_name,
+            phone_number,
+            email,
+            membership,
+            valid_from,
+            valid_to,
+            is_current
+        )
+        SELECT
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            closed.valid_to,
+            NULL,
+            TRUE
+        FROM closed
         RETURNING customer_key;
         """,
         (
-            customer["customer_id"],
-            customer["customer_name"],
-            customer.get("phone_number"),
-            customer.get("email"),
-            customer.get("membership"),
+            customer_id,
+            customer_name,
+            phone_number,
+            email,
+            membership,
+            customer_id,
+            customer_name,
+            phone_number,
+            email,
+            membership,
         ),
     )
-    return cur.fetchone()[0]
+    inserted_changed_row = cur.fetchone()
+    if inserted_changed_row:
+        return inserted_changed_row[0]
+
+    current_customer_key = _get_current_customer_key(cur, customer_id)
+    if current_customer_key is not None:
+        return current_customer_key
+
+    cur.execute(
+        """
+        INSERT INTO dw.dim_customer (
+            customer_id,
+            customer_name,
+            phone_number,
+            email,
+            membership,
+            valid_from,
+            valid_to,
+            is_current
+        )
+        VALUES (%s, %s, %s, %s, %s, NOW(), NULL, TRUE)
+        ON CONFLICT DO NOTHING
+        RETURNING customer_key;
+        """,
+        (
+            customer_id,
+            customer_name,
+            phone_number,
+            email,
+            membership,
+        ),
+    )
+    inserted_new_row = cur.fetchone()
+    if inserted_new_row:
+        return inserted_new_row[0]
+
+    current_customer_key = _get_current_customer_key(cur, customer_id)
+    if current_customer_key is None:
+        raise RuntimeError(f"Unable to resolve current customer_key for customer_id={customer_id}")
+    return current_customer_key
 
 def upsert_product(cur, product):
     cur.execute(
