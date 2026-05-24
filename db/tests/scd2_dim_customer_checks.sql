@@ -20,8 +20,8 @@ FROM dw.dim_customer a
 JOIN dw.dim_customer b
   ON a.customer_id = b.customer_id
  AND a.customer_key < b.customer_key
- AND tsrange(a.valid_from, COALESCE(a.valid_to, 'infinity'::timestamptz), '[)')
-     && tsrange(b.valid_from, COALESCE(b.valid_to, 'infinity'::timestamptz), '[)');
+ AND tstzrange(a.valid_from, COALESCE(a.valid_to, 'infinity'::timestamptz), '[)')
+     && tstzrange(b.valid_from, COALESCE(b.valid_to, 'infinity'::timestamptz), '[)');
 
 -- Check 3: Current rows must keep valid_to as NULL.
 SELECT
