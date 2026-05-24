@@ -3,7 +3,7 @@ import os
 from bson.objectid import ObjectId
 from pymongo import MongoClient
 
-from etl.utils import require_env
+from .utils import require_env
 
 
 def get_mongo_connection():

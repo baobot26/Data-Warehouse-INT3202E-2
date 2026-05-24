@@ -9,7 +9,7 @@ from typing import Any
 from pymongo import MongoClient
 from psycopg import connect
 
-from etl.dq import run_data_quality_checks
+from .dq import run_data_quality_checks
 
 
 PIPELINE_NAME = "orders"
