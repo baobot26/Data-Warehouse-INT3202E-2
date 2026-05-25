@@ -218,6 +218,11 @@ def extract_bronze(cur, batch_id: uuid.UUID, collection, collection_name: str) -
             ),
         )
         extracted += 1
+        if extracted % 1000 == 0:
+            print(
+                f"Bronze extracted {extracted} documents for batch {batch_id}",
+                flush=True,
+            )
 
     cur.execute(
         """
@@ -388,9 +393,19 @@ def load_silver(cur, batch_id: uuid.UUID) -> tuple[int, int]:
         if clean is None:
             insert_rejected_order(cur, bronze_row, reason)
             rejected += 1
+            if rejected % 1000 == 0:
+                print(
+                    f"Silver rejected {rejected} rows for batch {batch_id}",
+                    flush=True,
+                )
             continue
         insert_clean_order(cur, bronze_row, clean)
         accepted += 1
+        if accepted % 1000 == 0:
+            print(
+                f"Silver accepted {accepted} rows for batch {batch_id}",
+                flush=True,
+            )
 
     cur.execute(
         """
@@ -619,6 +634,104 @@ def upsert_date(cur, sold_at: datetime) -> int:
     return cur.fetchone()[0]
 
 
+def _normalize_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _resolve_customer_key(cur, row: dict[str, Any], customer_cache: dict[str, tuple[tuple[Any, ...], int]]) -> int:
+    customer_id = _normalize_text(row["customer_id"])
+    if customer_id is None:
+        raise ValueError("customer_id is required")
+
+    signature = (
+        _normalize_text(row.get("customer_name")),
+        _normalize_text(row.get("customer_phone_number")),
+        _normalize_text(row.get("customer_email")),
+        _normalize_text(row.get("customer_membership")),
+    )
+    cached = customer_cache.get(customer_id)
+    if cached and cached[0] == signature:
+        return cached[1]
+
+    customer_key = upsert_customer(cur, row)
+    customer_cache[customer_id] = (signature, customer_key)
+    return customer_key
+
+
+def _resolve_cached_dimension_key(
+    cur,
+    cache: dict[str, tuple[tuple[Any, ...], int]],
+    cache_key: str,
+    signature: tuple[Any, ...],
+    loader,
+    row: dict[str, Any],
+) -> int:
+    cached = cache.get(cache_key)
+    if cached and cached[0] == signature:
+        return cached[1]
+    dimension_key = loader(cur, row)
+    cache[cache_key] = (signature, dimension_key)
+    return dimension_key
+
+
+def _resolve_date_key(cur, sold_at: datetime, date_cache: dict[int, int]) -> int:
+    full_date = sold_at.date()
+    date_key = int(full_date.strftime("%Y%m%d"))
+    cached_key = date_cache.get(date_key)
+    if cached_key is not None:
+        return cached_key
+    resolved_key = upsert_date(cur, sold_at)
+    date_cache[date_key] = resolved_key
+    return resolved_key
+
+
+def _insert_fact_sales_batch(cur, fact_rows: list[tuple[Any, ...]]) -> None:
+    if not fact_rows:
+        return
+
+    value_template = "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    values_sql = ", ".join([value_template] * len(fact_rows))
+    params = [value for fact_row in fact_rows for value in fact_row]
+    cur.execute(
+        f"""
+        INSERT INTO dw.fact_sales (
+            order_id,
+            customer_key,
+            retailer_key,
+            product_key,
+            quantity,
+            price,
+            discount,
+            tax,
+            date_key,
+            address_key,
+            payment_key,
+            batch_id,
+            silver_id
+        )
+        VALUES {values_sql}
+        ON CONFLICT (order_id) DO UPDATE
+        SET customer_key = EXCLUDED.customer_key,
+            retailer_key = EXCLUDED.retailer_key,
+            product_key = EXCLUDED.product_key,
+            quantity = EXCLUDED.quantity,
+            price = EXCLUDED.price,
+            discount = EXCLUDED.discount,
+            tax = EXCLUDED.tax,
+            date_key = EXCLUDED.date_key,
+            address_key = EXCLUDED.address_key,
+            payment_key = EXCLUDED.payment_key,
+            batch_id = EXCLUDED.batch_id,
+            silver_id = EXCLUDED.silver_id,
+            loaded_at = NOW();
+        """,
+        params,
+    )
+
+
 def upsert_fact_sale(cur, row: dict[str, Any], batch_id: uuid.UUID) -> None:
     customer_key = upsert_customer(cur, row)
     product_key = upsert_product(cur, row)
@@ -679,6 +792,7 @@ def upsert_fact_sale(cur, row: dict[str, Any], batch_id: uuid.UUID) -> None:
 
 
 def load_gold(cur, batch_id: uuid.UUID) -> int:
+    batch_size = max(1, int(os.getenv("GOLD_BATCH_SIZE", "1000")))
     cur.execute(
         """
         SELECT
@@ -717,21 +831,144 @@ def load_gold(cur, batch_id: uuid.UUID) -> int:
     )
     rows = cur.fetchall()
     colnames = [desc.name for desc in cur.description]
+    total_rows = len(rows)
+
+    customer_cache: dict[str, tuple[tuple[Any, ...], int]] = {}
+    product_cache: dict[str, tuple[tuple[Any, ...], int]] = {}
+    retailer_cache: dict[str, tuple[tuple[Any, ...], int]] = {}
+    address_cache: dict[str, tuple[tuple[Any, ...], int]] = {}
+    payment_cache: dict[str, tuple[tuple[Any, ...], int]] = {}
+    date_cache: dict[int, int] = {}
 
     loaded = 0
-    for row in rows:
-        upsert_fact_sale(cur, dict(zip(colnames, row)), batch_id)
-        loaded += 1
+    pg_conn = cur.connection
 
-    cur.execute(
-        """
-        UPDATE etl.batch_run
-        SET gold_completed_at = NOW(),
-            gold_loaded_count = %s
-        WHERE batch_id = %s;
-        """,
-        (loaded, batch_id),
+    print(
+        f"Gold load started for batch {batch_id}: {total_rows} rows, batch_size={batch_size}",
+        flush=True,
     )
+
+    try:
+        for start in range(0, total_rows, batch_size):
+            batch_rows = rows[start : start + batch_size]
+            fact_rows: list[tuple[Any, ...]] = []
+
+            for row in batch_rows:
+                record = dict(zip(colnames, row))
+                customer_key = _resolve_customer_key(cur, record, customer_cache)
+                product_key = _resolve_cached_dimension_key(
+                    cur,
+                    product_cache,
+                    str(record["product_id"]),
+                    (
+                        record["product_name"],
+                        record.get("product_category"),
+                        record.get("product_brand"),
+                        record.get("quantity_in_stock"),
+                    ),
+                    upsert_product,
+                    record,
+                )
+                retailer_key = _resolve_cached_dimension_key(
+                    cur,
+                    retailer_cache,
+                    str(record["retailer_id"]),
+                    (
+                        record["retailer_name"],
+                        record.get("retailer_phone_number"),
+                        record.get("retailer_email"),
+                        record.get("retailer_rating"),
+                    ),
+                    upsert_retailer,
+                    record,
+                )
+                address_key = _resolve_cached_dimension_key(
+                    cur,
+                    address_cache,
+                    "|".join(
+                        [
+                            str(record["street"]),
+                            str(record["commune_ward"]),
+                            str(record["province_city"]),
+                        ]
+                    ),
+                    (
+                        record["street"],
+                        record["commune_ward"],
+                        record["province_city"],
+                    ),
+                    upsert_address,
+                    record,
+                )
+                payment_key = _resolve_cached_dimension_key(
+                    cur,
+                    payment_cache,
+                    "|".join(
+                        [
+                            str(record["payment_type"]),
+                            str(record["method_provider"]),
+                        ]
+                    ),
+                    (
+                        record["payment_type"],
+                        record["method_provider"],
+                    ),
+                    upsert_payment,
+                    record,
+                )
+                date_key = _resolve_date_key(cur, record["sold_at"], date_cache)
+
+                fact_rows.append(
+                    (
+                        record["order_id"],
+                        customer_key,
+                        retailer_key,
+                        product_key,
+                        record["quantity"],
+                        record["price"],
+                        record["discount"],
+                        record["tax"],
+                        date_key,
+                        address_key,
+                        payment_key,
+                        batch_id,
+                        record["silver_id"],
+                    )
+                )
+
+            _insert_fact_sales_batch(cur, fact_rows)
+            loaded += len(fact_rows)
+            cur.execute(
+                """
+                UPDATE etl.batch_run
+                SET gold_completed_at = NOW(),
+                    gold_loaded_count = %s
+                WHERE batch_id = %s;
+                """,
+                (loaded, batch_id),
+            )
+            pg_conn.commit()
+            print(
+                f"Gold load progress for batch {batch_id}: {loaded}/{total_rows}",
+                flush=True,
+            )
+
+        if total_rows == 0:
+            cur.execute(
+                """
+                UPDATE etl.batch_run
+                SET gold_completed_at = NOW(),
+                    gold_loaded_count = 0
+                WHERE batch_id = %s;
+                """,
+                (batch_id,),
+            )
+            pg_conn.commit()
+
+    except Exception:
+        pg_conn.rollback()
+        raise
+
     return loaded
 
 
@@ -780,27 +1017,36 @@ def run_pipeline() -> uuid.UUID:
     dq_passed = False
 
     try:
+        print(f"Starting pipeline batch {batch_id}", flush=True)
         collection = mongo_client[mongo_db_name][collection_name]
         with pg_conn.cursor() as cur:
             start_batch(cur, batch_id, mongo_db_name, collection_name)
         pg_conn.commit()
+        print(f"Batch {batch_id}: started", flush=True)
 
         with pg_conn.cursor() as cur:
             extracted = extract_bronze(cur, batch_id, collection, collection_name)
         pg_conn.commit()
+        print(f"Batch {batch_id}: bronze extracted={extracted}", flush=True)
 
         with pg_conn.cursor() as cur:
             accepted, rejected = load_silver(cur, batch_id)
         pg_conn.commit()
+        print(
+            f"Batch {batch_id}: silver accepted={accepted}, rejected={rejected}",
+            flush=True,
+        )
 
         with pg_conn.cursor() as cur:
             loaded = load_gold(cur, batch_id)
         pg_conn.commit()
+        print(f"Batch {batch_id}: gold loaded={loaded}", flush=True)
 
         with pg_conn.cursor() as cur:
             dq_passed = run_data_quality_checks(cur, batch_id)
             finish_batch(cur, batch_id, dq_passed)
         pg_conn.commit()
+        print(f"Batch {batch_id}: dq_passed={dq_passed}", flush=True)
 
         if not dq_passed:
             raise RuntimeError(f"Data quality checks failed for batch {batch_id}")
@@ -816,10 +1062,12 @@ def run_pipeline() -> uuid.UUID:
         pg_conn.close()
 
     print(
-        "Batch "
-        f"{batch_id} complete: extracted={extracted}, "
-        f"silver_accepted={accepted}, silver_rejected={rejected}, "
-        f"gold_loaded={loaded}, dq_passed={dq_passed}"
+        (
+            f"Batch {batch_id} complete: extracted={extracted}, "
+            f"silver_accepted={accepted}, silver_rejected={rejected}, "
+            f"gold_loaded={loaded}, dq_passed={dq_passed}"
+        ),
+        flush=True,
     )
     return batch_id
 
