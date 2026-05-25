@@ -14,6 +14,7 @@ def main() -> None:
     )
     parser.parse_args()
 
+    print("Starting layered ETL pipeline...", flush=True)
     run_pipeline()
 
 
