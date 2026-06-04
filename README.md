@@ -1,22 +1,26 @@
 # Data-Warehouse-INT3202E-2
 
-Kho dữ liệu mẫu chạy bằng Docker cho bài toán Olist star schema. Sau đợt refactor này, mã nguồn chuẩn duy nhất nằm trong `core/`.
+Kho dữ liệu mẫu chạy bằng Docker cho bài toán Olist star schema. Sau đợt refactor gần đây, toàn bộ mã nguồn chuẩn của dự án đã được gom vào thư mục `core/`.
 
-## 1. Tổng quan
+## 1. Cấu trúc dự án
 
-- `MongoDB` lưu dữ liệu thô của đơn hàng tại `landing.orders_raw`.
-- `PostgreSQL` lưu ba lớp dữ liệu:
-  - `bronze`: dữ liệu thô đã nạp vào kho, kèm metadata của batch
-  - `silver`: dữ liệu đã chuẩn hóa, lọc lỗi và liên kết ngược về bronze
-  - `dw`: lớp Gold dùng cho phân tích theo star schema
-- `core/dashboard/app.py` hiển thị dashboard đọc trực tiếp từ PostgreSQL.
-- `etl.batch_run` lưu lịch sử từng lần chạy pipeline.
-- `dq.check_results` lưu kết quả kiểm tra chất lượng dữ liệu theo batch.
+Phần `core/` là nơi chứa toàn bộ logic chính:
 
-## 2. Yêu cầu trước khi chạy
+- `core/etl/`: logic ETL, bao gồm import Olist vào MongoDB, xử lý Bronze/Silver/Gold, data quality và SCD2
+- `core/dashboard/`: ứng dụng dashboard đọc dữ liệu từ PostgreSQL
+- `core/db/`: script khởi tạo schema và migration cho PostgreSQL
+- `core/mongo-init.js`: script khởi tạo MongoDB
+- `core/Dockerfile`: image dùng chung cho ETL, dashboard và pipeline import
 
-- Docker Desktop hoặc Docker Engine phải đang chạy.
-- Tạo file `.env` ở thư mục gốc từ `.env.example`.
+Các thư mục source cũ ở root như `dashboard/`, `etl/`, `db/` đã được loại bỏ khỏi luồng chạy chính.
+
+## 2. Yêu cầu hệ thống
+
+Trước khi chạy dự án, bạn cần:
+
+- Docker Desktop hoặc Docker Engine đang hoạt động
+- File `.env` ở thư mục gốc, tạo từ `.env.example`
+- Dữ liệu thô Olist nằm trong `data/olist/raw/`
 
 PowerShell:
 
@@ -30,7 +34,7 @@ Bash:
 cp .env.example .env
 ```
 
-- Bộ dữ liệu Olist phải nằm trong `data/olist/raw/` trước khi chạy pipeline:
+Dữ liệu Olist cần có:
 
 ```text
 data/olist/raw/olist_orders_dataset.csv
@@ -42,35 +46,21 @@ data/olist/raw/olist_order_payments_dataset.csv
 data/olist/raw/product_category_name_translation.csv
 ```
 
-## 3. Cấu trúc chính
+## 3. Kiến trúc vận hành
 
-Các phần quan trọng hiện đã được gom về `core/`:
-
-- `core/dashboard/app.py`: dashboard web
-- `core/etl/main_etl.py`: entrypoint của ETL
-- `core/etl/etl_legacy.py`: orchestration cho luồng Bronze/Silver/Gold
-- `core/etl/load.py`: logic load Gold và SCD2
-- `core/etl/import_olist_to_mongo.py`: import CSV Olist vào MongoDB
-- `core/etl/dq.py`: kiểm tra dữ liệu và reconciliation
-- `core/etl/extract.py`, `core/etl/transform.py`, `core/etl/utils.py`: helper ETL
-- `core/db/init.sql`: schema bootstrap cho PostgreSQL volume mới
-- `core/db/migration/*.sql`: migration schema
-- `core/db/tests/scd2_dim_customer_checks.sql`: kiểm tra hồi quy SCD2
-- `core/mongo-init.js`: bootstrap MongoDB
-- `core/Dockerfile`: image chung cho dashboard và ETL
-
-Các thư mục source cũ ở root như `dashboard/`, `etl/`, `db/` không còn là nơi chứa code chính.
-
-## 4. Kiến trúc dữ liệu
-
-Luồng dữ liệu chuẩn của dự án:
+Luồng dữ liệu của dự án:
 
 1. Olist raw CSV được import vào MongoDB.
-2. ETL đọc dữ liệu từ MongoDB và nạp lần lượt vào `bronze`, `silver`, rồi `dw`.
-3. Dashboard đọc dữ liệu từ PostgreSQL để hiển thị trạng thái batch, số liệu Gold và kết quả DQ.
+2. ETL đọc dữ liệu từ MongoDB và nạp tuần tự vào `bronze`, `silver`, rồi `dw`.
+3. Dashboard đọc dữ liệu từ PostgreSQL để hiển thị số liệu Gold, trạng thái batch và kết quả DQ.
 
-Các bảng chính:
+Các bảng chính trong PostgreSQL:
 
+- `bronze.orders_raw`
+- `silver.orders_clean`
+- `silver.orders_rejected`
+- `etl.batch_run`
+- `dq.check_results`
 - `dw.fact_sales`
 - `dw.dim_customer`
 - `dw.dim_product`
@@ -78,52 +68,27 @@ Các bảng chính:
 - `dw.dim_address`
 - `dw.dim_payment`
 - `dw.dim_date`
-- `bronze.orders_raw`
-- `silver.orders_clean`
-- `silver.orders_rejected`
-- `etl.batch_run`
-- `dq.check_results`
 
-## 5. Khởi động hệ thống
+## 4. Hướng dẫn chạy
 
-### Bước 1: Reset volume nếu cần môi trường sạch
+### 4.1 Full Run
 
-Khi bạn đổi schema, đổi dataset hoặc muốn chạy lại từ đầu, hãy xóa volume cũ:
-
-```powershell
-docker compose down -v
-```
-
-### Bước 2: Khởi động các service nền
-
-Lệnh dưới đây bật PostgreSQL, MongoDB và dashboard:
-
-```powershell
-docker compose up -d postgres mongodb dashboard
-```
-
-### Bước 3: Chạy pipeline theo một trong 3 cách
-
-#### Cách 1 (Full)
-
-Chạy toàn bộ pipeline Olist: kiểm tra CSV, import vào MongoDB, sau đó chạy ETL đầy đủ.
+Đây là chế độ chạy đầy đủ, phù hợp khi bạn muốn import Olist từ đầu và chạy toàn bộ pipeline.
 
 ```powershell
 docker compose --profile tools run --rm olist-pipeline
 ```
 
-Trong container, lệnh này thực thi:
+Trong container, pipeline sẽ thực hiện:
 
 - `python -m core.etl.import_olist_to_mongo`
 - `python -m core.etl.main_etl`
 
-Đây là chế độ nên dùng khi bạn muốn chạy đầy đủ từ đầu đến cuối.
+### 4.2 Limited Run
 
-#### Cách 2 (Test nhanh / Giới hạn)
+Chế độ này giới hạn số lượng bản ghi bằng biến môi trường `OLIST_LIMIT`, rất hữu ích khi bạn muốn test nhanh hoặc tiết kiệm tài nguyên.
 
-Dùng `OLIST_LIMIT` để import một số lượng bản ghi xác định. Chế độ này phù hợp cho smoke test, kiểm tra wiring hoặc debug nhanh.
-
-PowerShell (Windows):
+PowerShell:
 
 ```powershell
 $env:OLIST_LIMIT = 100
@@ -131,7 +96,7 @@ docker compose --profile tools run --rm olist-pipeline
 Remove-Item Env:OLIST_LIMIT
 ```
 
-Bash (Linux/macOS/Git Bash):
+Bash:
 
 ```bash
 OLIST_LIMIT=100 docker compose --profile tools run --rm olist-pipeline
@@ -139,92 +104,89 @@ OLIST_LIMIT=100 docker compose --profile tools run --rm olist-pipeline
 
 Ghi chú:
 
-- `OLIST_LIMIT=0` hoặc để trống nghĩa là chạy không giới hạn.
-- Nếu muốn giữ giá trị lâu hơn, bạn có thể đặt nó trong `.env`.
+- `OLIST_LIMIT=0` hoặc không đặt biến này nghĩa là chạy toàn bộ dữ liệu.
+- Bạn cũng có thể khai báo `OLIST_LIMIT` trong file `.env` nếu muốn dùng thường xuyên.
 
-#### Cách 3 (Rerun ETL)
+### 4.3 Rerun ETL
 
-Dùng khi MongoDB đã có sẵn raw data và bạn chỉ muốn chạy lại phần ETL, không import lại CSV.
+Dùng khi dữ liệu thô đã có sẵn trong MongoDB và bạn chỉ muốn chạy lại phần ETL sang PostgreSQL.
 
 ```powershell
 docker compose run --rm etl
 ```
 
-Lệnh này dùng image trong `core/Dockerfile` và chạy `python -m core.etl.main_etl` trong container.
+Lệnh này sẽ chạy `python -m core.etl.main_etl` trong container.
 
-## 6. Kiểm tra sau khi chạy
+## 5. Ghi chú kỹ thuật
 
-Mở dashboard tại:
+Dự án hiện đã được tối ưu để xử lý dữ liệu lớn ổn định hơn:
+
+- Gold layer dùng batch-processing, xử lý theo lô 1000 dòng
+- transaction được commit theo batch để tránh giữ kết nối quá lâu
+- khi có lỗi sẽ rollback để giải phóng transaction
+- log có `flush=True` để hiển thị ngay trong container
+
+Những cải tiến này giúp pipeline tránh tình trạng treo khi xử lý khối lượng lớn như 110k bản ghi.
+
+## 6. Cách kiểm tra sau khi chạy
+
+Mở dashboard:
 
 ```text
 http://localhost:8501
 ```
 
-Dashboard sẽ hiển thị:
-
-- số liệu Gold
-- trạng thái batch ETL gần nhất
-- kết quả kiểm tra chất lượng dữ liệu
-- top sản phẩm
-- các đơn hàng gần nhất
-
-Kiểm tra batch gần nhất:
+Kiểm tra trạng thái batch gần nhất:
 
 ```powershell
 docker compose exec postgres psql -U warehouse -d warehouse -c "SELECT status, extracted_count, silver_accepted_count, silver_rejected_count, gold_loaded_count, finished_at - started_at AS elapsed FROM etl.batch_run ORDER BY started_at DESC LIMIT 1;"
 ```
 
-Kiểm tra số dòng trong fact:
+Kiểm tra số dòng trong Gold fact:
+
+```powershell
+docker compose exec postgres psql -U warehouse -d warehouse -c "SELECT COUNT(*) AS fact_sales_rows FROM dw.fact_sales;"
+```
+
+Kiểm tra dữ liệu trong `dw.fact_sales`:
 
 ```powershell
 docker compose exec postgres psql -U warehouse -d warehouse -c "SELECT order_id, quantity, price, discount, tax, batch_id, silver_id FROM dw.fact_sales ORDER BY loaded_at DESC LIMIT 20;"
 ```
 
-Xem kết quả data quality của batch gần nhất:
+Kiểm tra batch và data quality gần nhất:
 
 ```powershell
 docker compose exec postgres psql -U warehouse -d warehouse -c "SELECT layer, check_name, status, severity, checked_count, failed_count, details FROM dq.check_results WHERE batch_id = (SELECT batch_id FROM etl.batch_run ORDER BY started_at DESC LIMIT 1) ORDER BY layer, check_name;"
 ```
 
-## 7. Các file quan trọng
+## 7. File quan trọng
 
-- `docker-compose.yml`: định nghĩa toàn bộ stack, mount đúng file trong `core/` và chạy các service bằng module `core.*`.
-- `core/Dockerfile`: image dùng chung cho dashboard, ETL và pipeline import.
-- `core/dashboard/app.py`: ứng dụng dashboard.
-- `core/etl/main_etl.py`: entrypoint ETL.
-- `core/etl/etl_legacy.py`: luồng Bronze/Silver/Gold chính.
-- `core/etl/load.py`: load Gold và SCD2.
-- `core/etl/import_olist_to_mongo.py`: import Olist CSV vào MongoDB.
-- `core/etl/dq.py`: kiểm tra chất lượng dữ liệu.
-- `core/etl/extract.py`, `core/etl/transform.py`, `core/etl/utils.py`: các helper ETL.
-- `core/db/init.sql`: schema bootstrap cho PostgreSQL volume mới.
-- `core/db/migration/*.sql`: migration cho schema và bảng liên quan.
-- `core/db/tests/scd2_dim_customer_checks.sql`: kiểm tra hồi quy cho SCD2.
-- `core/mongo-init.js`: script khởi tạo MongoDB.
+- `docker-compose.yml`: khai báo toàn bộ stack và trỏ tới các file trong `core/`
+- `core/Dockerfile`: image chung cho dashboard và ETL
+- `core/dashboard/app.py`: dashboard web
+- `core/etl/main_etl.py`: entrypoint ETL
+- `core/etl/etl_legacy.py`: luồng Bronze/Silver/Gold chính
+- `core/etl/load.py`: logic load Gold và SCD2
+- `core/etl/import_olist_to_mongo.py`: import Olist CSV vào MongoDB
+- `core/etl/dq.py`: data quality
+- `core/etl/extract.py`, `core/etl/transform.py`, `core/etl/utils.py`: helper ETL
+- `core/db/init.sql`: bootstrap schema cho PostgreSQL
+- `core/db/migration/*.sql`: migration schema
+- `core/db/tests/scd2_dim_customer_checks.sql`: kiểm tra hồi quy SCD2
+- `core/mongo-init.js`: bootstrap MongoDB
 
-## 8. Ghi chú vận hành
+## 8. Khắc phục sự cố
 
-- Mã nguồn chuẩn của dự án nằm trong `core/`.
-- `docker compose` đọc `.env` ở thư mục gốc và đồng thời truyền biến vào container qua `env_file`.
-- `core/db/init.sql` và `core/mongo-init.js` chỉ chạy khi volume còn trống.
-- `date_key` được lưu theo định dạng `YYYYMMDD`, phù hợp với star schema.
-- `order_id` là business key của fact table.
-- `dw` là tên lớp Gold trong dự án này.
-- Olist là dataset nguồn chuẩn cho các lần chạy thường lệ.
+Nếu gặp lỗi `ModuleNotFoundError`, hãy kiểm tra:
 
-## 9. Khắc phục sự cố
+- `docker-compose.yml` đang trỏ tới `core/Dockerfile`
+- dashboard dùng `python -m core.dashboard.app`
+- ETL dùng `python -m core.etl.main_etl`
 
-Nếu gặp lỗi `ModuleNotFoundError`:
+Nếu thiếu dữ liệu Olist, hãy xác nhận các file CSV nằm đúng trong `data/olist/raw/`.
 
-- kiểm tra `docker-compose.yml` đang trỏ tới `core/Dockerfile`
-- kiểm tra command của dashboard là `python -m core.dashboard.app`
-- kiểm tra ETL entrypoint là `python -m core.etl.main_etl`
-
-Nếu gặp lỗi thiếu dữ liệu CSV:
-
-- bảo đảm các file Olist nằm đúng trong `data/olist/raw/`
-
-Nếu muốn chạy lại từ đầu với schema mới:
+Nếu muốn chạy lại từ đầu với database sạch:
 
 ```powershell
 docker compose down -v
